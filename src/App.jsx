@@ -7,8 +7,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Trash2, Play, Pause, Plus, Upload, Circle, StopCircle, Film, Image as ImageIcon, Type, GripVertical, Palette } from "lucide-react";
 import { makeI18n } from "./i18n";
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile } from '@ffmpeg/util';
 
 const i18n = makeI18n();
 
@@ -30,43 +28,30 @@ export default function DesktopDocWorkshopApp() {
   const [globalTitle, setGlobalTitle] = useState("");
   const [showTitle, setShowTitle] = useState(true);
   const [loadingStates, setLoadingStates] = useState({});
-
-  // Cyberpunk color theme state
   const [selectedColor, setSelectedColor] = useState("green");
+  const [uiLang, setUiLang] = useState(i18n.lang);
+
+  // Add missing refs
+  const canvasRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const rafRef = useRef(null);
+  const videoElementsRef = useRef(new Map());
+  const imageElementsRef = useRef(new Map());
 
   // 90s Terminal/CRT color palette - ensure this is defined properly
   const cyberColors = useMemo(() => ({
-    green: { primary: "#00aa00", shadow: "#00aa00" },     // Classic terminal green
-    amber: { primary: "#ffaa00", shadow: "#ffaa00" },     // Amber monitor
-    red: { primary: "#cc0000", shadow: "#cc0000" },       // Dark red
-    blue: { primary: "#0066cc", shadow: "#0066cc" },      // Dark blue
-    purple: { primary: "#6600cc", shadow: "#6600cc" }     // Deep purple
+    green: { primary: "#00aa00", shadow: "#00aa00" },
+    amber: { primary: "#ffaa00", shadow: "#ffaa00" },
+    red: { primary: "#cc0000", shadow: "#cc0000" },
+    blue: { primary: "#0066cc", shadow: "#0066cc" },
+    purple: { primary: "#6600cc", shadow: "#6600cc" }
   }), []);
 
-  const canvasRef = useRef(null);
-  const rafRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const recordedChunksRef = useRef([]);
-  const videoElementsRef = useRef(new Map());
-  const imageElementsRef = useRef(new Map());
-  const [uiLang, setUiLang] = useState(i18n.lang);
-  const [isConverting, setIsConverting] = useState(false);
-  const ffmpegRef = useRef(new FFmpeg());
-
-  // Initialize FFmpeg
-  useEffect(() => {
-    const loadFFmpeg = async () => {
-      const ffmpeg = ffmpegRef.current;
-      if (!ffmpeg.loaded) {
-        try {
-          await ffmpeg.load();
-        } catch (error) {
-          console.warn('FFmpeg failed to load:', error);
-        }
-      }
-    };
-    loadFFmpeg();
-  }, []);
+  // Get current color with fallback
+  const getCurrentColor = useCallback(() => {
+    return cyberColors[selectedColor] || cyberColors.green;
+  }, [cyberColors, selectedColor]);
 
   // Derived: total duration
   const totalDuration = useMemo(() => {
@@ -93,12 +78,7 @@ export default function DesktopDocWorkshopApp() {
     return { index: -1, localTime: 0, duration: 0 };
   }, [timeline, library]);
 
-  // Get current color with fallback
-  const getCurrentColor = useCallback(() => {
-    return cyberColors[selectedColor] || cyberColors.green;
-  }, [cyberColors, selectedColor]);
-
-  // Utility functions - moved above their usage
+  // Utility functions
   const coverRect = useCallback((srcW, srcH, dstW, dstH) => {
     const srcRatio = srcW / srcH;
     const dstRatio = dstW / dstH;
@@ -117,7 +97,7 @@ export default function DesktopDocWorkshopApp() {
     return { x, y, dw, dh };
   }, []);
 
-  const wrapText = useCallback((ctx, text, x, y, maxWidth, lineHeight, fromBottom = false) => {
+  const wrapText = useCallback((ctx, text, x, y, maxWidth, lineHeight) => {
     const words = text.split(" ");
     let line = "";
     let yy = y;
@@ -129,7 +109,7 @@ export default function DesktopDocWorkshopApp() {
       if (metrics.width > maxWidth && n > 0) {
         ctx.fillText(line, x, yy);
         line = words[n] + " ";
-        yy += fromBottom ? -lineHeight : lineHeight;
+        yy += lineHeight;
       } else {
         line = testLine;
       }
@@ -137,28 +117,7 @@ export default function DesktopDocWorkshopApp() {
     ctx.fillText(line, x, yy);
   }, []);
 
-  // Add a new function for centered text wrapping
-  const wrapTextCentered = useCallback((ctx, text, centerX, y, maxWidth, lineHeight) => {
-    const words = text.split(" ");
-    let line = "";
-    let yy = y;
-    
-    for (let n = 0; n < words.length; n++) {
-      const testLine = line + words[n] + " ";
-      const metrics = ctx.measureText(testLine);
-      
-      if (metrics.width > maxWidth && n > 0) {
-        ctx.fillText(line.trim(), centerX, yy);
-        line = words[n] + " ";
-        yy -= lineHeight; // Move up for next line (since we're going from bottom)
-      } else {
-        line = testLine;
-      }
-    }
-    ctx.fillText(line.trim(), centerX, yy);
-  }, []);
-
-  // Improved image loading with error handling
+  // Image loading
   const loadImage = useCallback((src) =>
     new Promise((resolve, reject) => {
       if (imageElementsRef.current.has(src)) {
@@ -171,15 +130,41 @@ export default function DesktopDocWorkshopApp() {
         imageElementsRef.current.set(src, img);
         resolve(img);
       };
-      img.onerror = (error) => {
-        console.error('Failed to load image:', src, error);
-        reject(error);
-      };
+      img.onerror = reject;
       img.crossOrigin = "anonymous";
       img.src = src;
     }), []);
 
-  // Get or create video element for playback
+  // Video probing
+  const probeVideo = useCallback((src) =>
+    new Promise((resolve, reject) => {
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.muted = true;
+      
+      const handleLoadedMetadata = () => {
+        resolve({
+          width: v.videoWidth,
+          height: v.videoHeight,
+          duration: v.duration,
+          src,
+        });
+        cleanup();
+      };
+
+      const handleError = reject;
+      const cleanup = () => {
+        v.removeEventListener("loadedmetadata", handleLoadedMetadata);
+        v.removeEventListener("error", handleError);
+        v.remove();
+      };
+
+      v.addEventListener("loadedmetadata", handleLoadedMetadata);
+      v.addEventListener("error", handleError);
+      v.src = src;
+    }), []);
+
+  // Get video element
   const getVideoElement = useCallback((lib) => {
     if (videoElementsRef.current.has(lib.id)) {
       return videoElementsRef.current.get(lib.id);
@@ -197,40 +182,6 @@ export default function DesktopDocWorkshopApp() {
     return v;
   }, []);
 
-  // Improved video probing with error handling
-  const probeVideo = useCallback((src) =>
-    new Promise((resolve, reject) => {
-      const v = document.createElement("video");
-      v.preload = "metadata";
-      v.muted = true;
-      
-      const handleLoadedMetadata = () => {
-        resolve({
-          width: v.videoWidth,
-          height: v.videoHeight,
-          duration: v.duration,
-          src,
-        });
-        cleanup();
-      };
-
-      const handleError = (error) => {
-        console.error('Failed to load video metadata:', src, error);
-        reject(error);
-        cleanup();
-      };
-
-      const cleanup = () => {
-        v.removeEventListener("loadedmetadata", handleLoadedMetadata);
-        v.removeEventListener("error", handleError);
-        v.remove();
-      };
-
-      v.addEventListener("loadedmetadata", handleLoadedMetadata);
-      v.addEventListener("error", handleError);
-      v.src = src;
-    }), []);
-
   // Drawing functions
   const drawMedia = useCallback(async (lib, ctx, currentTime = 0) => {
     const { w, h } = canvasSize;
@@ -246,7 +197,6 @@ export default function DesktopDocWorkshopApp() {
     } else if (lib.type === "video") {
       const v = getVideoElement(lib);
       
-      // Sync video time
       const targetTime = Math.min(v.duration - 0.01, Math.max(0, currentTime));
       if (Math.abs(v.currentTime - targetTime) > 0.1) {
         v.currentTime = targetTime;
@@ -273,23 +223,19 @@ export default function DesktopDocWorkshopApp() {
     const maxWidth = w - pad * 2;
     const currentColor = getCurrentColor();
     
-    // Cyberpunk style title font
-    ctx.font = "italic 900 42px 'Orbitron', 'Courier New', monospace";
+    ctx.font = "bold 42px monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     
-    // Cyberpunk glow effect background
     ctx.fillStyle = "rgba(0,0,0,0.7)";
     const textWidth = ctx.measureText(text.toUpperCase()).width;
     ctx.fillRect(pad - 10, pad - 10, Math.min(textWidth + 20, maxWidth + 20), 60);
     
-    // Cyberpunk neon glow effect
     ctx.fillStyle = currentColor.primary;
     ctx.shadowColor = currentColor.shadow;
     ctx.shadowBlur = 10;
     wrapText(ctx, text.toUpperCase(), pad, pad, maxWidth, 48);
     
-    // Reset shadow
     ctx.shadowBlur = 0;
   }, [wrapText, getCurrentColor]);
 
@@ -298,39 +244,31 @@ export default function DesktopDocWorkshopApp() {
     const maxWidth = w - pad * 2;
     const currentColor = getCurrentColor();
     
-    // Cyberpunk style caption font
-    ctx.font = "italic 700 28px 'Orbitron', 'Courier New', monospace";
+    ctx.font = "bold 28px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
     
-    // Darker background with slight neon edge
     ctx.fillStyle = "rgba(0,0,0,0.8)";
     const metrics = ctx.measureText(text.toUpperCase());
     const boxW = Math.min(maxWidth, metrics.width + 40);
     const boxH = 44;
     
-    // Center the background box
     const boxX = (w - boxW) / 2;
     ctx.fillRect(boxX, h - pad - boxH, boxW, boxH);
     
-    // Add subtle neon border
     ctx.strokeStyle = currentColor.primary;
     ctx.lineWidth = 2;
     ctx.strokeRect(boxX, h - pad - boxH, boxW, boxH);
     
-    // Cyberpunk text with glow
     ctx.fillStyle = "#ffffff";
     ctx.shadowColor = currentColor.shadow;
     ctx.shadowBlur = 5;
     
-    const textX = w / 2;
-    wrapTextCentered(ctx, text.toUpperCase(), textX, h - pad - 12, maxWidth, 34);
-    
-    // Reset shadow
+    ctx.fillText(text.toUpperCase(), w / 2, h - pad - 12);
     ctx.shadowBlur = 0;
-  }, [getCurrentColor, wrapTextCentered]);
+  }, [getCurrentColor]);
 
-  // Improved renderAtTime function
+  // Render function
   const renderAtTime = useCallback((t) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -383,7 +321,7 @@ export default function DesktopDocWorkshopApp() {
     }
   }, [timeline, library, activeIndexAt, crossfade, showTitle, globalTitle, drawMedia, drawCaption, drawTitle]);
 
-  // Handle dropped files with better error handling
+  // File handling
   const onFiles = async (files) => {
     const items = [];
     
@@ -442,59 +380,71 @@ export default function DesktopDocWorkshopApp() {
     setTimeline((t) => t.filter((c) => c.id !== clipId));
   }, []);
 
-  // Drag and drop reordering functions - simplified
-  const [draggedItem, setDraggedItem] = useState(null);
-  const [dragOverIndex, setDragOverIndex] = useState(null);
-
-  const handleTimelineDragStart = useCallback((e, clipId) => {
-    setDraggedItem(clipId);
-  }, []);
-
-  const handleTimelineDragEnd = useCallback(() => {
-    setDraggedItem(null);
-    setDragOverIndex(null);
-  }, []);
-
-  const handleTimelineRowDragOver = useCallback((e, index) => {
-    e.preventDefault();
-    setDragOverIndex(index);
-  }, []);
-
-  const handleTimelineRowDrop = useCallback((e, dropIndex) => {
-    e.preventDefault();
-    e.stopPropagation(); // Prevent parent elements from handling the drop
+  // Recording functions
+  const startRecording = () => {
+    if (recState === "recording") return;
     
-    if (!draggedItem) return;
-
-    setTimeline((currentTimeline) => {
-      const draggedIndex = currentTimeline.findIndex((clip) => clip.id === draggedItem);
-      if (draggedIndex === -1) return currentTimeline;
-
-      // If dropping in the same spot, do nothing
-      if (draggedIndex === dropIndex || draggedIndex === dropIndex -1) {
-        return currentTimeline;
-      }
-
-      const newTimeline = [...currentTimeline];
-      const [draggedClip] = newTimeline.splice(draggedIndex, 1);
+    try {
+      const canvas = canvasRef.current;
+      const stream = canvas.captureStream(30);
+      const mr = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
       
-      // Adjust index if moving an item downwards
-      const adjustedIndex = dropIndex > draggedIndex ? dropIndex - 1 : dropIndex;
-      newTimeline.splice(adjustedIndex, 0, draggedClip);
+      recordedChunksRef.current = [];
       
-      return newTimeline;
-    });
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      
+      mr.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `desktop-doc-${Date.now()}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+      
+      mediaRecorderRef.current = mr;
+      mr.start();
+      setRecState("recording");
+      
+      setProgress(0);
+      setIsPlaying(true);
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+    }
+  };
 
-    setDraggedItem(null);
-    setDragOverIndex(null);
-  }, [draggedItem]);
+  const stopRecording = () => {
+    if (recState !== "recording") return;
+    
+    const mr = mediaRecorderRef.current;
+    if (mr) {
+      mr.stop();
+      setRecState("idle");
+      setIsPlaying(false);
+    }
+  };
 
-  // If timeline changes and playhead is at end, rewind to start
+  // File drop handlers
+  const handleFileDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length) onFiles(files);
+  };
+
+  const handleFileDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  // Effects
   useEffect(() => {
     setProgress((p) => (p >= Math.max(0, totalDuration - 1e-3) ? 0 : p));
   }, [timeline, totalDuration]);
 
-  // Playback engine
   useEffect(() => {
     if (!isPlaying) return;
     
@@ -525,16 +475,18 @@ export default function DesktopDocWorkshopApp() {
     };
   }, [isPlaying, totalDuration, renderAtTime, progress]);
 
-  // Render when not playing
   useEffect(() => {
     if (!isPlaying) {
       renderAtTime(progress);
     }
   }, [progress, renderAtTime, isPlaying]);
 
+  useEffect(() => {
+    document.documentElement.lang = i18n.lang;
+  }, [uiLang]);
+
   // Cleanup
   useEffect(() => {
-    // Capture the current Map instances so the cleanup uses the same objects
     const videoMap = videoElementsRef.current;
     const imageMap = imageElementsRef.current;
 
@@ -546,7 +498,7 @@ export default function DesktopDocWorkshopApp() {
             video.src = '';
             video.remove();
           } catch {
-            // ignore individual cleanup errors
+            // ignore cleanup errors
           }
         });
         if (typeof videoMap.clear === 'function') videoMap.clear();
@@ -558,114 +510,9 @@ export default function DesktopDocWorkshopApp() {
     };
   }, []);
 
-  // Recording functions
-  const startRecording = () => {
-    if (recState === "recording") return;
-    
-    try {
-      const canvas = canvasRef.current;
-      const stream = canvas.captureStream(30);
-      const mr = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp9" });
-      
-      recordedChunksRef.current = [];
-      
-      mr.ondataavailable = (e) => {
-        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
-      };
-      
-      mr.onstop = async () => {
-        const webmBlob = new Blob(recordedChunksRef.current, { type: "video/webm" });
-        
-        // Try to convert to MP4, fallback to WebM if conversion fails
-        try {
-          const mp4Blob = await convertToMP4(webmBlob);
-          downloadFile(mp4Blob, `desktop-doc-${Date.now()}.mp4`);
-        } catch (error) {
-          console.warn('MP4 conversion failed, downloading WebM:', error);
-          downloadFile(webmBlob, `desktop-doc-${Date.now()}.webm`);
-        }
-      };
-      
-      mr.onerror = (error) => {
-        console.error('MediaRecorder error:', error);
-        setRecState("idle");
-      };
-      
-      mediaRecorderRef.current = mr;
-      mr.start();
-      setRecState("recording");
-      
-      setProgress(0);
-      setIsPlaying(true);
-    } catch (error) {
-      console.error('Failed to start recording:', error);
-    }
-  };
-
-  const convertToMP4 = async (webmBlob) => {
-    const ffmpeg = ffmpegRef.current;
-    if (!ffmpeg.loaded) {
-      throw new Error('FFmpeg not loaded');
-    }
-
-    setIsConverting(true);
-    
-    try {
-      // Write input file
-      await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
-      
-      // Convert to MP4
-      await ffmpeg.exec([
-        '-i', 'input.webm',
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'fast',
-        '-crf', '23',
-        'output.mp4'
-      ]);
-      
-      // Read output file
-      const mp4Data = await ffmpeg.readFile('output.mp4');
-      
-      // Cleanup
-      await ffmpeg.deleteFile('input.webm');
-      await ffmpeg.deleteFile('output.mp4');
-      
-      return new Blob([mp4Data], { type: 'video/mp4' });
-    } finally {
-      setIsConverting(false);
-    }
-  };
-
-  const downloadFile = (blob, filename) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // File drop handlers (rename to avoid conflicts)
-  const handleFileDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const files = Array.from(e.dataTransfer.files || []);
-    if (files.length) onFiles(files);
-  };
-
-  const handleFileDragOver = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
   // UI helpers
   const totalReadable = formatSeconds(totalDuration || 0);
   const progressReadable = formatSeconds(progress || 0);
-
-  useEffect(() => {
-    document.documentElement.lang = i18n.lang;
-  }, [uiLang]);
 
   return (
     <div className="min-h-screen w-full bg-neutral-50 text-neutral-900 p-4 md:p-6 lg:p-8">
@@ -674,7 +521,7 @@ export default function DesktopDocWorkshopApp() {
         <Card className="lg:col-span-2 shadow-xl rounded-2xl">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-xl flex items-center gap-2">
-              <Upload className="w-5 h-5" /> {i18n.t("mediaLibrary")}
+              <Upload className="w-5 h-5" /> {i18n.t("mediaLibrary") || "Media Library"}
             </CardTitle>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
@@ -690,27 +537,27 @@ export default function DesktopDocWorkshopApp() {
               </div>
               <Dialog>
                 <DialogTrigger asChild>
-                  <Button variant="secondary" className="rounded-2xl cyberpunk-font">
-                    {i18n.t("howItWorks")}
+                  <Button variant="secondary" className="rounded-2xl">
+                    {i18n.t("howItWorks") || "HOW IT WORKS?"}
                   </Button>
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
-                    <DialogTitle className="cyberpunk-title">{i18n.t("guideTitle")}</DialogTitle>
+                    <DialogTitle>{i18n.t("guideTitle") || "DESKTOP DOCUMENTARY – QUICK GUIDE"}</DialogTitle>
                   </DialogHeader>
-                  <ol className="list-decimal pl-6 space-y-2 text-sm leading-6">
-                    {i18n.t("guideSteps").map((s, i) => <li key={i}>{s}</li>)}
-                  </ol>
-                  <p className="text-xs text-neutral-500 mt-2">
-                    {i18n.t("ffmpegHint")}
-                  </p>
+                  <div className="space-y-2 text-sm">
+                    <p>1. Drag and drop images/videos here.</p>
+                    <p>2. Add each to the timeline.</p>
+                    <p>3. Optionally add captions and set crossfade.</p>
+                    <p>4. Preview with Play; Record to save as WebM.</p>
+                  </div>
                 </DialogContent>
               </Dialog>
             </div>
           </CardHeader>
           <CardContent>
             <div onDrop={handleFileDrop} onDragOver={handleFileDragOver} className="border-2 border-dashed rounded-2xl p-6 text-center bg-white">
-              <p className="text-sm text-neutral-600">{i18n.t("fileDropInstructions")}</p>
+              <p className="text-sm text-neutral-600">Drag files here or click to select.</p>
               <Input type="file" multiple accept="image/*,video/*" className="mt-3" onChange={(e) => onFiles(Array.from(e.target.files || []))}/>
             </div>
 
@@ -723,10 +570,6 @@ export default function DesktopDocWorkshopApp() {
                         src={item.url} 
                         alt={item.file?.name || "Image"} 
                         className="w-full h-full object-cover"
-                        onError={(e) => {
-                          e.target.style.display = 'none';
-                          e.target.nextSibling.style.display = 'flex';
-                        }}
                       />
                     ) : (
                       <video 
@@ -734,23 +577,8 @@ export default function DesktopDocWorkshopApp() {
                         className="w-full h-full object-cover"
                         muted
                         playsInline
-                        onError={(e) => {
-                          e.target.style.display = 'none';
-                          e.target.nextSibling.style.display = 'flex';
-                        }}
-                        onLoadedData={(e) => {
-                          e.target.currentTime = 0.1;
-                        }}
                       />
                     )}
-                    
-                    <div className="absolute inset-0 bg-neutral-100 flex items-center justify-center" style={{ display: 'none' }}>
-                      {item.type === "image" ? (
-                        <ImageIcon className="w-8 h-8 text-neutral-400"/>
-                      ) : (
-                        <Film className="w-8 h-8 text-neutral-400"/>
-                      )}
-                    </div>
                     
                     <Badge className="absolute top-2 left-2" variant="secondary">{item.type}</Badge>
                     {loadingStates[item.id] && (
@@ -762,7 +590,7 @@ export default function DesktopDocWorkshopApp() {
                   <div className="p-2 text-xs flex items-center justify-between">
                     <span className="truncate">{item.file?.name || item.type}</span>
                     <Button size="sm" variant="outline" className="rounded-xl" onClick={() => addToTimeline(item.id)}>
-                      <Plus className="w-4 h-4 mr-1"/> {i18n.t("add")}
+                      <Plus className="w-4 h-4 mr-1"/> Add
                     </Button>
                   </div>
                 </div>
@@ -774,7 +602,7 @@ export default function DesktopDocWorkshopApp() {
         {/* Stage */}
         <Card className="lg:col-span-3 shadow-xl rounded-2xl">
           <CardHeader>
-            <CardTitle className="text-xl cyberpunk-font">{i18n.t("stageAndRecord")}</CardTitle>
+            <CardTitle className="text-xl">STAGE & RECORD</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col md:flex-row gap-4">
@@ -796,16 +624,15 @@ export default function DesktopDocWorkshopApp() {
                     variant={isPlaying ? "secondary" : "default"}
                   >
                     {isPlaying ? <Pause className="w-4 h-4 mr-1"/> : <Play className="w-4 h-4 mr-1"/>}
-                    {isPlaying ? i18n.t("pause") : i18n.t("play")}
+                    {isPlaying ? "Pause" : "Play"}
                   </Button>
                   {recState !== "recording" ? (
-                    <Button onClick={startRecording} className="rounded-2xl" variant="destructive" disabled={isConverting}>
-                      <Circle className="w-4 h-4 mr-1"/> 
-                      {isConverting ? i18n.t("converting") : i18n.t("recordMP4")}
+                    <Button onClick={startRecording} className="rounded-2xl" variant="destructive">
+                      <Circle className="w-4 h-4 mr-1"/> Record (WebM)
                     </Button>
                   ) : (
                     <Button onClick={stopRecording} className="rounded-2xl" variant="secondary">
-                      <StopCircle className="w-4 h-4 mr-1"/> {i18n.t("stop")}
+                      <StopCircle className="w-4 h-4 mr-1"/> Stop
                     </Button>
                   )}
 
@@ -817,7 +644,7 @@ export default function DesktopDocWorkshopApp() {
 
               <div className="w-full md:w-72 space-y-4">
                 <div className="p-3 bg-white rounded-2xl border">
-                  <div className="text-xs font-semibold mb-2">{i18n.t("outputResolution")}</div>
+                  <div className="text-xs font-semibold mb-2">Output Resolution</div>
                   <div className="grid grid-cols-2 gap-2">
                     {[
                       { w: 1280, h: 720, label: "720p" },
@@ -831,15 +658,14 @@ export default function DesktopDocWorkshopApp() {
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border">
-                  <div className="text-xs font-semibold mb-2">{i18n.t("crossfadeSeconds")}</div>
+                  <div className="text-xs font-semibold mb-2">Crossfade (s)</div>
                   <Slider min={0} max={3} step={0.1} value={[crossfade]} onValueChange={([v]) => setCrossfade(v)}/>
                 </div>
 
-                {/* Color Theme Picker */}
                 <div className="p-3 bg-white rounded-2xl border space-y-2">
                   <div className="text-xs font-semibold flex items-center gap-2">
                     <Palette className="w-4 h-4"/>
-                    {i18n.t("themeHeading")}
+                    Cyberpunk Color Theme
                   </div>
                   <div className="flex gap-2 items-center">
                     {Object.entries(cyberColors).map(([colorKey, colorValue]) => (
@@ -862,16 +688,16 @@ export default function DesktopDocWorkshopApp() {
                     ))}
                   </div>
                   <div className="text-xs text-neutral-500 mt-1">
-                    {i18n.t("selected")}: <span className="font-semibold" style={{ color: getCurrentColor().primary }}>
+                    Selected: <span className="font-semibold" style={{ color: getCurrentColor().primary }}>
                       {selectedColor.toUpperCase()}
                     </span>
                   </div>
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border space-y-2">
-                  <div className="text-xs font-semibold">{i18n.t("globalTitleLabel")}</div>
+                  <div className="text-xs font-semibold">Global Title</div>
                   <div className="flex items-center gap-2">
-                    <Input placeholder={i18n.t("projectTitlePlaceholder")} value={globalTitle} onChange={(e) => setGlobalTitle(e.target.value)} />
+                    <Input placeholder="Project title…" value={globalTitle} onChange={(e) => setGlobalTitle(e.target.value)} />
                     <Button size="sm" variant={showTitle ? "default" : "outline"} className="rounded-xl" onClick={() => setShowTitle((s) => !s)}>
                       <Type className="w-4 h-4"/>
                     </Button>
@@ -880,138 +706,93 @@ export default function DesktopDocWorkshopApp() {
               </div>
             </div>
 
-            {/* Timeline with cyberpunk styling */}
+            {/* Timeline */}
             <div className="mt-6">
-              <div className="text-sm font-semibold mb-2 flex items-center gap-2 cyberpunk-font">
-                {i18n.t("timeline")}
-                {timeline.length > 0 && (
-                  <span className="text-xs text-neutral-500 normal-case">
-                    {i18n.t("timelineReorderHint")}
-                  </span>
-                )}
-              </div>
+              <div className="text-sm font-semibold mb-2">TIMELINE</div>
               <div className="space-y-2">
                 {timeline.length === 0 && (
-                  <div className="text-xs text-neutral-500">{i18n.t("timelineEmpty")}</div>
+                  <div className="text-xs text-neutral-500">No clips yet. Click "Add" in the library.</div>
                 )}
                 {timeline.map((clip, i) => {
                   const lib = library.find((l) => l.id === clip.libId);
-                  const isDragging = draggedItem === clip.id;
-                  const isDropTarget = dragOverIndex === i;
                   
                   return (
-                    <div key={clip.id}>
-                      {isDropTarget && draggedItem !== clip.id && (
-                        <div className="h-1 bg-blue-500 rounded-full mx-2 mb-2 opacity-75"></div>
-                      )}
+                    <div key={clip.id} className="flex items-center gap-3 p-2 bg-white border rounded-xl">
+                      <Badge variant="secondary">{i + 1}</Badge>
                       
-                      <div 
-                        onDragOver={(e) => handleTimelineRowDragOver(e, i)}
-                        onDrop={(e) => handleTimelineRowDrop(e, i)}
-                        className={`flex items-center gap-3 p-2 bg-white border rounded-xl transition-all duration-200 ${
-                          isDragging ? 'opacity-50' : ''
-                        } hover:shadow-md`}
-                      >
-                        <div
-                          draggable
-                          onDragStart={(e) => handleTimelineDragStart(e, clip.id)}
-                          onDragEnd={handleTimelineDragEnd}
-                          className="flex items-center text-neutral-400 hover:text-neutral-600 cursor-grab active:cursor-grabbing"
-                        >
-                          <GripVertical className="w-4 h-4" />
-                        </div>
-                        
-                        <Badge variant="secondary">{i + 1}</Badge>
-                        
-                        <div className="w-12 h-8 rounded overflow-hidden bg-neutral-100 flex-shrink-0">
-                          {lib?.type === "image" ? (
-                            <img 
-                              src={lib.url} 
-                              alt="preview" 
-                              className="w-full h-full object-cover"
-                            />
-                          ) : lib?.type === "video" ? (
-                            <video 
-                              src={lib.url} 
-                              className="w-full h-full object-cover"
-                              muted
-                              playsInline
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Film className="w-3 h-3 text-neutral-400" />
-                            </div>
-                          )}
-                        </div>
-                        
-                        <div className="w-24 text-xs truncate">{lib?.file?.name || lib?.type}</div>
-                        
+                      <div className="w-12 h-8 rounded overflow-hidden bg-neutral-100 flex-shrink-0">
                         {lib?.type === "image" ? (
-                          <div className="flex items-center gap-2 text-xs">
-                            <span>{i18n.t("duration")}:</span>
-                            <Slider
-                              className="w-32"
-                              min={0.05}
-                              max={4}
-                              step={0.05}
-                              value={[Math.min(4, Math.max(0.05, clip.duration))]}
-                              onValueChange={([v]) =>
-                                setTimeline((t) =>
-                                  t.map((c) =>
-                                    c.id === clip.id
-                                      ? {
-                                          ...c,
-                                          duration: Math.min(4, Math.max(0.05, Math.round(v * 20) / 20)),
-                                        }
-                                      : c
-                                  )
-                                )
-                              }
-                              onPointerDown={(e) => e.stopPropagation()}
-                            />
-                            <span className="w-12 text-right text-xs">
-                              {Number((Math.min(4, Math.max(0.05, clip.duration))).toFixed(2))}s
-                            </span>
-                          </div>
+                          <img 
+                            src={lib.url} 
+                            alt="preview" 
+                            className="w-full h-full object-cover"
+                          />
+                        ) : lib?.type === "video" ? (
+                          <video 
+                            src={lib.url} 
+                            className="w-full h-full object-cover"
+                            muted
+                            playsInline
+                          />
                         ) : (
-                          <div className="text-xs text-neutral-500">
-                            {i18n.t("videoLabel")} ({formatSeconds(lib?.duration || 0)})
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Film className="w-3 h-3 text-neutral-400" />
                           </div>
                         )}
-                        
-                        <Input
-                          className="ml-2 flex-1"
-                          placeholder={i18n.t("captionPlaceholder")}
-                          value={clip.caption}
-                          onChange={(e) => setTimeline((t) => t.map((c) => (c.id === clip.id ? { ...c, caption: e.target.value } : c)))}
-                          onPointerDown={(e) => e.stopPropagation()}
-                        />
-                        
-                        <Button 
-                          size="icon" 
-                          variant="ghost" 
-                          className="ml-auto hover:bg-red-50 hover:text-red-600" 
-                          onClick={() => removeFromTimeline(clip.id)}
-                          onPointerDown={(e) => e.stopPropagation()}
-                        >
-                          <Trash2 className="w-4 h-4"/>
-                        </Button>
                       </div>
+                      
+                      <div className="w-24 text-xs truncate">{lib?.file?.name || lib?.type}</div>
+                      
+                      {lib?.type === "image" ? (
+                        <div className="flex items-center gap-2 text-xs">
+                          <span>Duration:</span>
+                          <Slider
+                            className="w-32"
+                            min={0.05}
+                            max={4}
+                            step={0.05}
+                            value={[Math.min(4, Math.max(0.05, clip.duration))]}
+                            onValueChange={([v]) =>
+                              setTimeline((t) =>
+                                t.map((c) =>
+                                  c.id === clip.id
+                                    ? {
+                                        ...c,
+                                        duration: Math.min(4, Math.max(0.05, Math.round(v * 20) / 20)),
+                                      }
+                                    : c
+                                )
+                              )
+                            }
+                          />
+                          <span className="w-12 text-right text-xs">
+                            {Number((Math.min(4, Math.max(0.05, clip.duration))).toFixed(2))}s
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="text-xs text-neutral-500">
+                          Video ({formatSeconds(lib?.duration || 0)})
+                        </div>
+                      )}
+                      
+                      <Input
+                        className="ml-2 flex-1"
+                        placeholder="Caption…"
+                        value={clip.caption}
+                        onChange={(e) => setTimeline((t) => t.map((c) => (c.id === clip.id ? { ...c, caption: e.target.value } : c)))}
+                      />
+                      
+                      <Button 
+                        size="icon" 
+                        variant="ghost" 
+                        className="ml-auto hover:bg-red-50 hover:text-red-600" 
+                        onClick={() => removeFromTimeline(clip.id)}
+                      >
+                        <Trash2 className="w-4 h-4"/>
+                      </Button>
                     </div>
                   );
                 })}
-                
-                {timeline.length > 0 && (
-                  <div
-                    className={`mt-2 h-10 border-2 border-dashed rounded-xl flex items-center justify-center text-xs ${
-                      dragOverIndex === timeline.length ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-neutral-300 text-neutral-500'
-                    }`}
-                    onDragOver={(e) => handleTimelineRowDragOver(e, timeline.length)}
-                    onDrop={(e) => handleTimelineRowDrop(e, timeline.length)}
-                  >
-                    {i18n.t("dropHere")}
-                  </div>
-                )}
               </div>
             </div>
           </CardContent>
