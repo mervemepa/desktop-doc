@@ -7,6 +7,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Trash2, Play, Pause, Plus, Upload, Circle, StopCircle, Film, Image as ImageIcon, Type, GripVertical, Palette } from "lucide-react";
 import { makeI18n } from "./i18n";
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile } from '@ffmpeg/util';
 
 const i18n = makeI18n();
 
@@ -48,7 +50,23 @@ export default function DesktopDocWorkshopApp() {
   const videoElementsRef = useRef(new Map());
   const imageElementsRef = useRef(new Map());
   const [uiLang, setUiLang] = useState(i18n.lang);
-  
+  const [isConverting, setIsConverting] = useState(false);
+  const ffmpegRef = useRef(new FFmpeg());
+
+  // Initialize FFmpeg
+  useEffect(() => {
+    const loadFFmpeg = async () => {
+      const ffmpeg = ffmpegRef.current;
+      if (!ffmpeg.loaded) {
+        try {
+          await ffmpeg.load();
+        } catch (error) {
+          console.warn('FFmpeg failed to load:', error);
+        }
+      }
+    };
+    loadFFmpeg();
+  }, []);
 
   // Derived: total duration
   const totalDuration = useMemo(() => {
@@ -555,14 +573,17 @@ export default function DesktopDocWorkshopApp() {
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
       };
       
-      mr.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `desktop-doc-${Date.now()}.webm`;
-        a.click();
-        URL.revokeObjectURL(url);
+      mr.onstop = async () => {
+        const webmBlob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+        
+        // Try to convert to MP4, fallback to WebM if conversion fails
+        try {
+          const mp4Blob = await convertToMP4(webmBlob);
+          downloadFile(mp4Blob, `desktop-doc-${Date.now()}.mp4`);
+        } catch (error) {
+          console.warn('MP4 conversion failed, downloading WebM:', error);
+          downloadFile(webmBlob, `desktop-doc-${Date.now()}.webm`);
+        }
       };
       
       mr.onerror = (error) => {
@@ -574,7 +595,6 @@ export default function DesktopDocWorkshopApp() {
       mr.start();
       setRecState("recording");
       
-      // Reset progress to beginning and start playing
       setProgress(0);
       setIsPlaying(true);
     } catch (error) {
@@ -582,16 +602,48 @@ export default function DesktopDocWorkshopApp() {
     }
   };
 
-  const stopRecording = () => {
-    if (recState !== "recording") return;
+  const convertToMP4 = async (webmBlob) => {
+    const ffmpeg = ffmpegRef.current;
+    if (!ffmpeg.loaded) {
+      throw new Error('FFmpeg not loaded');
+    }
+
+    setIsConverting(true);
     
     try {
-      mediaRecorderRef.current?.stop();
-      setRecState("idle");
-      setIsPlaying(false); // Also stop playback when recording stops
-    } catch (error) {
-      console.error('Failed to stop recording:', error);
+      // Write input file
+      await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+      
+      // Convert to MP4
+      await ffmpeg.exec([
+        '-i', 'input.webm',
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'fast',
+        '-crf', '23',
+        'output.mp4'
+      ]);
+      
+      // Read output file
+      const mp4Data = await ffmpeg.readFile('output.mp4');
+      
+      // Cleanup
+      await ffmpeg.deleteFile('input.webm');
+      await ffmpeg.deleteFile('output.mp4');
+      
+      return new Blob([mp4Data], { type: 'video/mp4' });
+    } finally {
+      setIsConverting(false);
     }
+  };
+
+  const downloadFile = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // File drop handlers (rename to avoid conflicts)
@@ -747,8 +799,9 @@ export default function DesktopDocWorkshopApp() {
                     {isPlaying ? i18n.t("pause") : i18n.t("play")}
                   </Button>
                   {recState !== "recording" ? (
-                    <Button onClick={startRecording} className="rounded-2xl" variant="destructive">
-                      <Circle className="w-4 h-4 mr-1"/> {i18n.t("recordWebM")}
+                    <Button onClick={startRecording} className="rounded-2xl" variant="destructive" disabled={isConverting}>
+                      <Circle className="w-4 h-4 mr-1"/> 
+                      {isConverting ? i18n.t("converting") : i18n.t("recordMP4")}
                     </Button>
                   ) : (
                     <Button onClick={stopRecording} className="rounded-2xl" variant="secondary">

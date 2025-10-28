@@ -33,6 +33,8 @@ export const dict = {
     captionPlaceholder: "Caption…",
     dropHere: "Buraya bırakın",
     language: "Dil",
+    recordMP4: "Kaydet (MP4)",
+    converting: "Dönüştürülüyor...",
   },
   en: {
     mediaLibrary: "Media Library",
@@ -67,6 +69,8 @@ export const dict = {
     captionPlaceholder: "Caption…",
     dropHere: "Drop here",
     language: "Language",
+    recordMP4: "Record (MP4)",
+    converting: "Converting...",
   },
 };
 
