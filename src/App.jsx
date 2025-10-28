@@ -6,6 +6,9 @@ import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Trash2, Play, Pause, Plus, Upload, Circle, StopCircle, Film, Image as ImageIcon, Type, GripVertical, Palette } from "lucide-react";
+import { makeI18n } from "./i18n";
+
+const i18n = makeI18n();
 
 function formatSeconds(s) {
   const mm = String(Math.floor(s / 60)).padStart(2, "0");
@@ -44,6 +47,8 @@ export default function DesktopDocWorkshopApp() {
   const recordedChunksRef = useRef([]);
   const videoElementsRef = useRef(new Map());
   const imageElementsRef = useRef(new Map());
+  const [uiLang, setUiLang] = useState(i18n.lang);
+  
 
   // Derived: total duration
   const totalDuration = useMemo(() => {
@@ -419,55 +424,57 @@ export default function DesktopDocWorkshopApp() {
     setTimeline((t) => t.filter((c) => c.id !== clipId));
   }, []);
 
-  // Drag and drop reordering functions
+  // Drag and drop reordering functions - simplified
   const [draggedItem, setDraggedItem] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
 
   const handleTimelineDragStart = useCallback((e, clipId) => {
     setDraggedItem(clipId);
-    e.dataTransfer.effectAllowed = 'move';
-    // Add a slight transparency to the dragged item
-    e.target.style.opacity = '0.5';
   }, []);
 
-  const handleTimelineDragEnd = useCallback((e) => {
-    e.target.style.opacity = '1';
+  const handleTimelineDragEnd = useCallback(() => {
     setDraggedItem(null);
     setDragOverIndex(null);
   }, []);
 
-  const handleTimelineDragOver = useCallback((e, index) => {
+  const handleTimelineRowDragOver = useCallback((e, index) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
     setDragOverIndex(index);
   }, []);
 
-  const handleTimelineDragLeave = useCallback(() => {
-    setDragOverIndex(null);
-  }, []);
-
-  const handleTimelineDrop = useCallback((e, dropIndex) => {
+  const handleTimelineRowDrop = useCallback((e, dropIndex) => {
     e.preventDefault();
+    e.stopPropagation(); // Prevent parent elements from handling the drop
     
     if (!draggedItem) return;
-    
-    setTimeline(currentTimeline => {
-      const draggedIndex = currentTimeline.findIndex(clip => clip.id === draggedItem);
+
+    setTimeline((currentTimeline) => {
+      const draggedIndex = currentTimeline.findIndex((clip) => clip.id === draggedItem);
       if (draggedIndex === -1) return currentTimeline;
-      
+
+      // If dropping in the same spot, do nothing
+      if (draggedIndex === dropIndex || draggedIndex === dropIndex -1) {
+        return currentTimeline;
+      }
+
       const newTimeline = [...currentTimeline];
       const [draggedClip] = newTimeline.splice(draggedIndex, 1);
       
-      // Insert at the new position
-      const insertIndex = dropIndex > draggedIndex ? dropIndex : dropIndex;
-      newTimeline.splice(insertIndex, 0, draggedClip);
+      // Adjust index if moving an item downwards
+      const adjustedIndex = dropIndex > draggedIndex ? dropIndex - 1 : dropIndex;
+      newTimeline.splice(adjustedIndex, 0, draggedClip);
       
       return newTimeline;
     });
-    
+
     setDraggedItem(null);
     setDragOverIndex(null);
   }, [draggedItem]);
+
+  // If timeline changes and playhead is at end, rewind to start
+  useEffect(() => {
+    setProgress((p) => (p >= Math.max(0, totalDuration - 1e-3) ? 0 : p));
+  }, [timeline, totalDuration]);
 
   // Playback engine
   useEffect(() => {
@@ -509,14 +516,27 @@ export default function DesktopDocWorkshopApp() {
 
   // Cleanup
   useEffect(() => {
+    // Capture the current Map instances so the cleanup uses the same objects
+    const videoMap = videoElementsRef.current;
+    const imageMap = imageElementsRef.current;
+
     return () => {
-      videoElementsRef.current.forEach(video => {
-        video.pause();
-        video.src = '';
-        video.remove();
-      });
-      videoElementsRef.current.clear();
-      imageElementsRef.current.clear();
+      if (videoMap) {
+        videoMap.forEach(video => {
+          try {
+            video.pause();
+            video.src = '';
+            video.remove();
+          } catch {
+            // ignore individual cleanup errors
+          }
+        });
+        if (typeof videoMap.clear === 'function') videoMap.clear();
+      }
+
+      if (imageMap && typeof imageMap.clear === 'function') {
+        imageMap.clear();
+      }
     };
   }, []);
 
@@ -591,37 +611,54 @@ export default function DesktopDocWorkshopApp() {
   const totalReadable = formatSeconds(totalDuration || 0);
   const progressReadable = formatSeconds(progress || 0);
 
+  useEffect(() => {
+    document.documentElement.lang = i18n.lang;
+  }, [uiLang]);
+
   return (
     <div className="min-h-screen w-full bg-neutral-50 text-neutral-900 p-4 md:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Library */}
         <Card className="lg:col-span-2 shadow-xl rounded-2xl">
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-xl flex items-center gap-2 cyberpunk-font">
-              <Upload className="w-5 h-5"/> MEDYA KÜTÜPHANESİ
+            <CardTitle className="text-xl flex items-center gap-2">
+              <Upload className="w-5 h-5" /> {i18n.t("mediaLibrary")}
             </CardTitle>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="secondary" className="rounded-2xl cyberpunk-font">NASIL ÇALIŞIR?</Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle className="cyberpunk-title">DESKTOP DOCUMENTARY – HIZLI REHBER</DialogTitle>
-                </DialogHeader>
-                <ol className="list-decimal pl-6 space-y-2 text-sm leading-6">
-                  <li>Görsel ve videoları bu kutuya <b>sürükleyip bırakın</b>.</li>
-                  <li>Her birini <b>zaman çizelgesine ekleyin</b>.</li>
-                  <li>Gerekirse <b>başlık</b> ve <b>captions</b> yazın; <b>crossfade</b> süresini ayarlayın.</li>
-                  <li><b>Play</b> ile önizleyin; <b>Record</b> ile kaydedip <b>WebM</b> dosyası olarak indirin.</li>
-                </ol>
-                <p className="text-xs text-neutral-500 mt-2">MP4'e dönüştürmek için: <code>ffmpeg -i input.webv -c:v libx264 -pix_fmt yuv420p output.mp4</code></p>
-              </DialogContent>
-            </Dialog>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-neutral-500">{i18n.t("language") || "Language"}:</span>
+                <button
+                  className={`px-2 py-1 rounded-xl text-xs border ${i18n.lang==='tr'?'bg-black text-white':''}`}
+                  onClick={() => { i18n.setLang('tr'); setUiLang(i18n.lang); }}
+                >TR</button>
+                <button
+                  className={`px-2 py-1 rounded-xl text-xs border ${i18n.lang==='en'?'bg-black text-white':''}`}
+                  onClick={() => { i18n.setLang('en'); setUiLang(i18n.lang); }}
+                >EN</button>
+              </div>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button variant="secondary" className="rounded-2xl cyberpunk-font">
+                    {i18n.t("howItWorks")}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle className="cyberpunk-title">{i18n.t("guideTitle")}</DialogTitle>
+                  </DialogHeader>
+                  <ol className="list-decimal pl-6 space-y-2 text-sm leading-6">
+                    {i18n.t("guideSteps").map((s, i) => <li key={i}>{s}</li>)}
+                  </ol>
+                  <p className="text-xs text-neutral-500 mt-2">
+                    {i18n.t("ffmpegHint")}
+                  </p>
+                </DialogContent>
+              </Dialog>
+            </div>
           </CardHeader>
           <CardContent>
-            {/* Update the file drop area to use renamed handlers */}
             <div onDrop={handleFileDrop} onDragOver={handleFileDragOver} className="border-2 border-dashed rounded-2xl p-6 text-center bg-white">
-              <p className="text-sm text-neutral-600">Dosyalarınızı buraya sürükleyin ya da tıklayın.</p>
+              <p className="text-sm text-neutral-600">{i18n.t("fileDropInstructions")}</p>
               <Input type="file" multiple accept="image/*,video/*" className="mt-3" onChange={(e) => onFiles(Array.from(e.target.files || []))}/>
             </div>
 
@@ -673,7 +710,7 @@ export default function DesktopDocWorkshopApp() {
                   <div className="p-2 text-xs flex items-center justify-between">
                     <span className="truncate">{item.file?.name || item.type}</span>
                     <Button size="sm" variant="outline" className="rounded-xl" onClick={() => addToTimeline(item.id)}>
-                      <Plus className="w-4 h-4 mr-1"/> Ekle
+                      <Plus className="w-4 h-4 mr-1"/> {i18n.t("add")}
                     </Button>
                   </div>
                 </div>
@@ -685,7 +722,7 @@ export default function DesktopDocWorkshopApp() {
         {/* Stage */}
         <Card className="lg:col-span-3 shadow-xl rounded-2xl">
           <CardHeader>
-            <CardTitle className="text-xl cyberpunk-font">SAHNE VE KAYIT</CardTitle>
+            <CardTitle className="text-xl cyberpunk-font">{i18n.t("stageAndRecord")}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col md:flex-row gap-4">
@@ -694,17 +731,28 @@ export default function DesktopDocWorkshopApp() {
                   <canvas ref={canvasRef} width={canvasSize.w} height={canvasSize.h} className="w-full h-auto block"/>
                 </div>
                 <div className="mt-3 flex items-center gap-2">
-                  <Button onClick={() => setIsPlaying((p) => !p)} className="rounded-2xl" variant={isPlaying ? "secondary" : "default"}>
+                  <Button
+                    onClick={() => {
+                      setIsPlaying((prev) => {
+                        if (!prev) {
+                          setProgress((p) => (p >= Math.max(0, totalDuration - 1e-3) ? 0 : p));
+                        }
+                        return !prev;
+                      });
+                    }}
+                    className="rounded-2xl"
+                    variant={isPlaying ? "secondary" : "default"}
+                  >
                     {isPlaying ? <Pause className="w-4 h-4 mr-1"/> : <Play className="w-4 h-4 mr-1"/>}
-                    {isPlaying ? "Pause" : "Play"}
+                    {isPlaying ? i18n.t("pause") : i18n.t("play")}
                   </Button>
                   {recState !== "recording" ? (
                     <Button onClick={startRecording} className="rounded-2xl" variant="destructive">
-                      <Circle className="w-4 h-4 mr-1"/> Record (WebM)
+                      <Circle className="w-4 h-4 mr-1"/> {i18n.t("recordWebM")}
                     </Button>
                   ) : (
                     <Button onClick={stopRecording} className="rounded-2xl" variant="secondary">
-                      <StopCircle className="w-4 h-4 mr-1"/> Stop
+                      <StopCircle className="w-4 h-4 mr-1"/> {i18n.t("stop")}
                     </Button>
                   )}
 
@@ -716,7 +764,7 @@ export default function DesktopDocWorkshopApp() {
 
               <div className="w-full md:w-72 space-y-4">
                 <div className="p-3 bg-white rounded-2xl border">
-                  <div className="text-xs font-semibold mb-2">Çıkış Çözünürlüğü</div>
+                  <div className="text-xs font-semibold mb-2">{i18n.t("outputResolution")}</div>
                   <div className="grid grid-cols-2 gap-2">
                     {[
                       { w: 1280, h: 720, label: "720p" },
@@ -730,7 +778,7 @@ export default function DesktopDocWorkshopApp() {
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border">
-                  <div className="text-xs font-semibold mb-2">Crossfade (sn)</div>
+                  <div className="text-xs font-semibold mb-2">{i18n.t("crossfadeSeconds")}</div>
                   <Slider min={0} max={3} step={0.1} value={[crossfade]} onValueChange={([v]) => setCrossfade(v)}/>
                 </div>
 
@@ -738,7 +786,7 @@ export default function DesktopDocWorkshopApp() {
                 <div className="p-3 bg-white rounded-2xl border space-y-2">
                   <div className="text-xs font-semibold flex items-center gap-2">
                     <Palette className="w-4 h-4"/>
-                    Cyberpunk Renk Teması
+                    {i18n.t("themeHeading")}
                   </div>
                   <div className="flex gap-2 items-center">
                     {Object.entries(cyberColors).map(([colorKey, colorValue]) => (
@@ -761,16 +809,16 @@ export default function DesktopDocWorkshopApp() {
                     ))}
                   </div>
                   <div className="text-xs text-neutral-500 mt-1">
-                    Seçili: <span className="font-semibold" style={{ color: getCurrentColor().primary }}>
+                    {i18n.t("selected")}: <span className="font-semibold" style={{ color: getCurrentColor().primary }}>
                       {selectedColor.toUpperCase()}
                     </span>
                   </div>
                 </div>
 
                 <div className="p-3 bg-white rounded-2xl border space-y-2">
-                  <div className="text-xs font-semibold">Genel Başlık</div>
+                  <div className="text-xs font-semibold">{i18n.t("globalTitleLabel")}</div>
                   <div className="flex items-center gap-2">
-                    <Input placeholder="Proje başlığı…" value={globalTitle} onChange={(e) => setGlobalTitle(e.target.value)} />
+                    <Input placeholder={i18n.t("projectTitlePlaceholder")} value={globalTitle} onChange={(e) => setGlobalTitle(e.target.value)} />
                     <Button size="sm" variant={showTitle ? "default" : "outline"} className="rounded-xl" onClick={() => setShowTitle((s) => !s)}>
                       <Type className="w-4 h-4"/>
                     </Button>
@@ -782,16 +830,16 @@ export default function DesktopDocWorkshopApp() {
             {/* Timeline with cyberpunk styling */}
             <div className="mt-6">
               <div className="text-sm font-semibold mb-2 flex items-center gap-2 cyberpunk-font">
-                ZAMAN ÇİZELGESİ
+                {i18n.t("timeline")}
                 {timeline.length > 0 && (
                   <span className="text-xs text-neutral-500 normal-case">
-                    (Sürükleyip bırakarak sıralayabilirsiniz)
+                    {i18n.t("timelineReorderHint")}
                   </span>
                 )}
               </div>
               <div className="space-y-2">
                 {timeline.length === 0 && (
-                  <div className="text-xs text-neutral-500">Henüz bir klip eklenmedi. Kütüphaneden "Ekle" butonuna tıklayın.</div>
+                  <div className="text-xs text-neutral-500">{i18n.t("timelineEmpty")}</div>
                 )}
                 {timeline.map((clip, i) => {
                   const lib = library.find((l) => l.id === clip.libId);
@@ -805,17 +853,18 @@ export default function DesktopDocWorkshopApp() {
                       )}
                       
                       <div 
+                        onDragOver={(e) => handleTimelineRowDragOver(e, i)}
+                        onDrop={(e) => handleTimelineRowDrop(e, i)}
                         className={`flex items-center gap-3 p-2 bg-white border rounded-xl transition-all duration-200 ${
-                          isDragging ? 'opacity-50 scale-95' : ''
-                        } ${isDropTarget ? 'border-blue-500 shadow-md' : ''} cursor-move hover:shadow-md`}
-                        draggable
-                        onDragStart={(e) => handleTimelineDragStart(e, clip.id)}
-                        onDragEnd={handleTimelineDragEnd}
-                        onDragOver={(e) => handleTimelineDragOver(e, i)}
-                        onDragLeave={handleTimelineDragLeave}
-                        onDrop={(e) => handleTimelineDrop(e, i)}
+                          isDragging ? 'opacity-50' : ''
+                        } hover:shadow-md`}
                       >
-                        <div className="flex items-center text-neutral-400 hover:text-neutral-600 cursor-grab active:cursor-grabbing">
+                        <div
+                          draggable
+                          onDragStart={(e) => handleTimelineDragStart(e, clip.id)}
+                          onDragEnd={handleTimelineDragEnd}
+                          className="flex items-center text-neutral-400 hover:text-neutral-600 cursor-grab active:cursor-grabbing"
+                        >
                           <GripVertical className="w-4 h-4" />
                         </div>
                         
@@ -827,7 +876,6 @@ export default function DesktopDocWorkshopApp() {
                               src={lib.url} 
                               alt="preview" 
                               className="w-full h-full object-cover"
-                              draggable={false}
                             />
                           ) : lib?.type === "video" ? (
                             <video 
@@ -835,7 +883,6 @@ export default function DesktopDocWorkshopApp() {
                               className="w-full h-full object-cover"
                               muted
                               playsInline
-                              draggable={false}
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
@@ -848,28 +895,43 @@ export default function DesktopDocWorkshopApp() {
                         
                         {lib?.type === "image" ? (
                           <div className="flex items-center gap-2 text-xs">
-                            <span>Süre:</span>
-                            <Slider 
-                              className="w-32" 
-                              min={1} 
-                              max={10} 
-                              step={0.5} 
-                              value={[clip.duration]} 
-                              onValueChange={([v]) => setTimeline((t) => t.map((c) => (c.id === clip.id ? { ...c, duration: v } : c)))} 
+                            <span>{i18n.t("duration")}:</span>
+                            <Slider
+                              className="w-32"
+                              min={0.05}
+                              max={4}
+                              step={0.05}
+                              value={[Math.min(4, Math.max(0.05, clip.duration))]}
+                              onValueChange={([v]) =>
+                                setTimeline((t) =>
+                                  t.map((c) =>
+                                    c.id === clip.id
+                                      ? {
+                                          ...c,
+                                          duration: Math.min(4, Math.max(0.05, Math.round(v * 20) / 20)),
+                                        }
+                                      : c
+                                  )
+                                )
+                              }
+                              onPointerDown={(e) => e.stopPropagation()}
                             />
-                            <span className="w-8 text-right text-xs">{clip.duration}s</span>
+                            <span className="w-12 text-right text-xs">
+                              {Number((Math.min(4, Math.max(0.05, clip.duration))).toFixed(2))}s
+                            </span>
                           </div>
                         ) : (
-                          <div className="text-xs text-neutral-500">Video ({formatSeconds(lib?.duration || 0)})</div>
+                          <div className="text-xs text-neutral-500">
+                            {i18n.t("videoLabel")} ({formatSeconds(lib?.duration || 0)})
+                          </div>
                         )}
                         
-                        <Input 
-                          className="ml-2 flex-1" 
-                          placeholder="Caption…" 
-                          value={clip.caption} 
+                        <Input
+                          className="ml-2 flex-1"
+                          placeholder={i18n.t("captionPlaceholder")}
+                          value={clip.caption}
                           onChange={(e) => setTimeline((t) => t.map((c) => (c.id === clip.id ? { ...c, caption: e.target.value } : c)))}
-                          onFocus={(e) => e.stopPropagation()}
-                          onClick={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => e.stopPropagation()}
                         />
                         
                         <Button 
@@ -877,6 +939,7 @@ export default function DesktopDocWorkshopApp() {
                           variant="ghost" 
                           className="ml-auto hover:bg-red-50 hover:text-red-600" 
                           onClick={() => removeFromTimeline(clip.id)}
+                          onPointerDown={(e) => e.stopPropagation()}
                         >
                           <Trash2 className="w-4 h-4"/>
                         </Button>
@@ -885,13 +948,15 @@ export default function DesktopDocWorkshopApp() {
                   );
                 })}
                 
-                {timeline.length > 0 && draggedItem && (
-                  <div 
-                    className="h-12 border-2 border-dashed border-neutral-300 rounded-xl flex items-center justify-center text-neutral-500 text-xs"
-                    onDragOver={(e) => handleTimelineDragOver(e, timeline.length)}
-                    onDrop={(e) => handleTimelineDrop(e, timeline.length)}
+                {timeline.length > 0 && (
+                  <div
+                    className={`mt-2 h-10 border-2 border-dashed rounded-xl flex items-center justify-center text-xs ${
+                      dragOverIndex === timeline.length ? 'border-blue-500 bg-blue-50 text-blue-600' : 'border-neutral-300 text-neutral-500'
+                    }`}
+                    onDragOver={(e) => handleTimelineRowDragOver(e, timeline.length)}
+                    onDrop={(e) => handleTimelineRowDrop(e, timeline.length)}
                   >
-                    Buraya bırakın
+                    {i18n.t("dropHere")}
                   </div>
                 )}
               </div>
